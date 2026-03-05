@@ -287,6 +287,11 @@ class MarketMakingBot:
             is_ou=tc.is_ou,
         )
 
+        # Hard clamp: OU adjustment cannot move mid by more than OU_ADJ_MAX_PCT.
+        # Prevents bad mu fits (BB: mu=$5 vs price=$40) from sending quotes to zero.
+        max_adj = mid * cfg.OU_ADJ_MAX_PCT
+        ou_adj = float(np.clip(ou_adj, -max_adj, max_adj))
+
         # Spread floor: must clear commission on both sides
         spread_floor = mid * cfg.COMMISSION_RATE * cfg.SPREAD_FLOOR_MULTIPLIER
 
