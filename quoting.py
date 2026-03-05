@@ -441,3 +441,43 @@ def ou_reservation_price_adjustment(
         )
 
     return drift_adj + risk_adj
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Quote sanity checker
+# ─────────────────────────────────────────────────────────────────────────────
+
+def validate_quotes(
+    ticker: str,
+    bid: float,
+    ask: float,
+    mid: float,
+    config,
+) -> tuple[bool, str]:
+    """
+    Hard sanity check on final bid/ask before posting.
+
+    Returns (is_valid, reason). If invalid, the quote should be suppressed
+    entirely rather than posted at a nonsense price.
+
+    Catches:
+    - OU adjustment gone haywire (bad mu fit sending bid to $0.01)
+    - ODE numerical overflow producing extreme spreads
+    - Cross-skew pushing quotes far outside any reasonable range
+    """
+    if mid <= 0:
+        return False, "mid price is zero or negative"
+
+    min_bid = mid * config.QUOTE_MIN_PCT_OF_MID
+    max_ask = mid * config.QUOTE_MAX_PCT_OF_MID
+
+    if bid < min_bid:
+        return False, f"bid {bid:.4f} < floor {min_bid:.4f} (50% of mid {mid:.4f})"
+    if ask > max_ask:
+        return False, f"ask {ask:.4f} > ceiling {max_ask:.4f} (200% of mid {mid:.4f})"
+    if bid <= 0:
+        return False, f"bid {bid:.4f} is non-positive"
+    if ask <= bid:
+        return False, f"ask {ask:.4f} <= bid {bid:.4f}"
+
+    return True, "ok"
