@@ -73,9 +73,20 @@ class OrderManager:
 
         await asyncio.sleep(0.2)
 
-        # Place new quotes
-        await self._place_bid(ticker, new_bid, quote_qty)
-        await self._place_ask(ticker, new_ask, quote_qty, ts.inventory)
+        # FIX 2: bid=-1 or ask=inf signals that this side was suppressed
+        # by the price-vs-mu gate — skip posting that side entirely
+        bid_suppressed = new_bid < 0
+        ask_suppressed = new_ask == float('inf')
+
+        if not bid_suppressed:
+            await self._place_bid(ticker, new_bid, quote_qty)
+        else:
+            logger.info(f"{ticker}: skipping bid post (price/mu gate suppressed)")
+
+        if not ask_suppressed:
+            await self._place_ask(ticker, new_ask, quote_qty, ts.inventory)
+        else:
+            logger.info(f"{ticker}: skipping ask post (price/mu gate suppressed)")
 
         # Record the quote so should_requote() knows when we last posted
         self.state.record_quote(ticker)
@@ -164,13 +175,25 @@ class OrderManager:
             logger.error(f"Failed to place ask {ticker} @ {price}: {e}")
 
     async def active_inventory_management(self, ticker: str):
-        """Bergault Ch.2 — go active when inventory breaches threshold."""
+        """
+        Bergault Ch.2 — go active when inventory breaches threshold.
+
+        FIX 4: Uses aggressive limit orders instead of market orders.
+        NER's /orders/sell_market returns 400 unless a counterparty exists.
+        We instead post a limit order at a discount to the best bid (for sells)
+        or a premium to the best ask (for buys) to get fast fills without
+        depending on the market order endpoint.
+        """
         cal = self.state.calibration
         if not cal or ticker not in cal.tickers:
             return
 
         ts = self.state.tickers.get(ticker)
         if not ts:
+            return
+
+        # FIX 3: Don't attempt unwind if ticker is paused due to adverse selection
+        if self.state.is_paused(ticker):
             return
 
         q_max = cal.tickers[ticker].q_max
@@ -180,29 +203,61 @@ class OrderManager:
         if ts.inventory > threshold:
             excess = ts.inventory - target
             qty = max(1, int(excess * self.config.ACTIVE_UNWIND_FRACTION))
-            logger.info(f"{ticker}: ACTIVE UNWIND (long) inv={ts.inventory} → selling {qty} at market")
+            qty = min(qty, getattr(self.config, 'MAX_QUOTE_QTY', 5))
+
+            # FIX 4: Use aggressive limit at best bid minus discount
+            mid = ts.mid or ts.market_price or 1.0
+            best_bid = ts.best_bid or (mid * 0.99)
+            discount = getattr(self.config, 'UNWIND_LIMIT_DISCOUNT', 0.01)
+            unwind_price = round(max(0.01, best_bid * (1.0 - discount)), 4)
+            expiry = getattr(self.config, 'UNWIND_LIMIT_EXPIRY_HOURS', 0.25)
+
+            logger.info(
+                f"{ticker}: ACTIVE UNWIND (long) inv={ts.inventory} → "
+                f"sell limit {qty} @ {unwind_price:.4f} (best_bid={best_bid:.4f})"
+            )
             if not self._can_place_order():
                 return
             try:
-                await self.api.place_sell_market(ticker, qty)
+                result = await self.api.place_sell_limit(ticker, qty, unwind_price, expiry)
                 self._record_order()
+                logger.info(f"{ticker}: unwind sell limit placed → {result.get('order_id', '?')}")
             except Exception as e:
-                logger.error(f"Active sell market {ticker}: {e}")
+                logger.error(f"Active unwind sell limit {ticker}: {e}")
 
         elif ts.inventory < -threshold:
             excess = abs(ts.inventory) - target
             qty = max(1, int(excess * self.config.ACTIVE_UNWIND_FRACTION))
-            logger.info(f"{ticker}: ACTIVE UNWIND (short) inv={ts.inventory} → buying {qty} at market")
+            qty = min(qty, getattr(self.config, 'MAX_QUOTE_QTY', 5))
+
+            # FIX 4: Use aggressive limit at best ask plus discount
+            mid = ts.mid or ts.market_price or 1.0
+            best_ask = ts.best_ask or (mid * 1.01)
+            discount = getattr(self.config, 'UNWIND_LIMIT_DISCOUNT', 0.01)
+            unwind_price = round(best_ask * (1.0 + discount), 4)
+            expiry = getattr(self.config, 'UNWIND_LIMIT_EXPIRY_HOURS', 0.25)
+
+            logger.info(
+                f"{ticker}: ACTIVE UNWIND (short) inv={ts.inventory} → "
+                f"buy limit {qty} @ {unwind_price:.4f} (best_ask={best_ask:.4f})"
+            )
             if not self._can_place_order():
                 return
             try:
-                await self.api.place_buy_market(ticker, qty)
+                result = await self.api.place_buy_limit(ticker, qty, unwind_price, expiry)
                 self._record_order()
+                logger.info(f"{ticker}: unwind buy limit placed → {result.get('order_id', '?')}")
             except Exception as e:
-                logger.error(f"Active buy market {ticker}: {e}")
+                logger.error(f"Active unwind buy limit {ticker}: {e}")
 
     def compute_quote_quantity(self, ticker: str, allocated_capital: float, price: float) -> int:
+        """
+        FIX 1: Cap qty to MAX_QUOTE_QTY to prevent large block adverse selection.
+        Previously qty scaled with capital, allowing 98-share bids on RTG.
+        """
         if price <= 0:
             return 1
         qty = int(allocated_capital / (2.0 * price))
-        return max(1, qty)
+        qty = max(1, qty)
+        max_qty = getattr(self.config, 'MAX_QUOTE_QTY', 5)
+        return min(qty, max_qty)
