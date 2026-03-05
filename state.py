@@ -57,6 +57,10 @@ class BotState:
         self.webhook_alive: bool = False
         self.last_webhook_time: float = 0.0
 
+        # FIX 3: Adverse selection pause registry
+        # Maps ticker → monotonic time when pause expires
+        self._paused_until: dict[str, float] = {}
+
     def t_remaining(self) -> float:
         elapsed = (time.monotonic() - self.session_start) / 3600.0
         remaining = self.T_hours - (elapsed % self.T_hours)
@@ -177,6 +181,24 @@ class BotState:
         if ts:
             ts.last_quote_time = time.monotonic()
             ts.last_quoted_mid = ts.mid or ts.market_price
+
+    def pause_ticker(self, ticker: str, minutes: float):
+        """Pause quoting for a ticker for `minutes` minutes (adverse selection cooldown)."""
+        self._paused_until[ticker] = time.monotonic() + minutes * 60.0
+        logger.warning(f"{ticker}: quoting paused for {minutes:.0f} min (adverse selection)")
+
+    def is_paused(self, ticker: str) -> bool:
+        """Returns True if the ticker is currently in an adverse selection cooldown."""
+        until = self._paused_until.get(ticker)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            del self._paused_until[ticker]
+            logger.info(f"{ticker}: adverse selection pause lifted — resuming quoting")
+            return False
+        remaining = (until - time.monotonic()) / 60.0
+        logger.debug(f"{ticker}: still paused ({remaining:.1f} min remaining)")
+        return True
 
     def get_inventory_vector(self, ticker_list: list[str]) -> np.ndarray:
         return np.array(
