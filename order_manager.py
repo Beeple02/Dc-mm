@@ -1,25 +1,16 @@
 # order_manager.py
-# Handles the cancel-replace cycle, active inventory management (Ch.2),
-# and rate-limit-aware order placement.
 
 import asyncio
 import logging
 import time
 
 from state import BotState, OpenOrder
-from quoting import OptimalQuotes
+from quoting import OptimalQuotes, validate_quotes
 
 logger = logging.getLogger(__name__)
 
 
 class OrderManager:
-    """
-    Manages the full lifecycle of MM orders:
-      1. Cancel stale quotes
-      2. Place fresh quotes within rate limit budget
-      3. Active unwind when inventory breaches threshold (Bergault Ch.2)
-    """
-
     def __init__(self, api_client, state: BotState, config):
         self.api = api_client
         self.state = state
@@ -27,7 +18,6 @@ class OrderManager:
         self._order_times: list[float] = []
 
     def _can_place_order(self) -> bool:
-        """Return True if placing an order won't exceed MAX_ORDERS_PER_MINUTE."""
         now = time.monotonic()
         self._order_times = [t for t in self._order_times if now - t < 60.0]
         return len(self._order_times) < self.config.MAX_ORDERS_PER_MINUTE
@@ -38,7 +28,12 @@ class OrderManager:
     async def refresh_quotes(self, ticker: str, quotes: OptimalQuotes, quote_qty: int):
         """
         Cancel stale resting orders and post updated quotes.
-        Only acts if the theoretical quotes have drifted beyond QUOTE_STALE_THRESHOLD.
+
+        Gate 1: should_requote() — checks minimum time interval and price move.
+                If this returns False, we do nothing (no cancels, no posts).
+        Gate 2: validate_quotes() — sanity checks final bid/ask against mid.
+                If this fails, we cancel existing orders but do NOT post new ones
+                (better to have no quote than a crazy quote).
         """
         ts = self.state.tickers.get(ticker)
         if not ts:
@@ -46,29 +41,44 @@ class OrderManager:
 
         new_bid = round(quotes.bid, 4)
         new_ask = round(quotes.ask, 4)
+        mid = ts.mid or ts.market_price
 
-        if not self.state.is_quote_stale(ticker, new_bid, new_ask):
-            logger.debug(f"{ticker}: quotes still fresh, no refresh needed")
+        # Gate 1: time + price move check
+        should, reason = self.state.should_requote(ticker, new_bid, new_ask)
+        if not should:
+            logger.debug(f"{ticker}: skip requote — {reason}")
             return
 
-        # Cancel existing bid
+        # Gate 2: sanity check final prices
+        valid, why = validate_quotes(ticker, new_bid, new_ask, mid or 1.0, self.config)
+        if not valid:
+            logger.warning(
+                f"{ticker}: QUOTE SUPPRESSED — {why} "
+                f"(bid={new_bid:.4f} ask={new_ask:.4f} mid={mid:.4f})"
+            )
+            # Cancel any existing crazy quotes but don't post new ones
+            if ts.bid_order:
+                await self._cancel_order(ts.bid_order.order_id, ticker, "buy")
+            if ts.ask_order:
+                await self._cancel_order(ts.ask_order.order_id, ticker, "sell")
+            return
+
+        logger.info(f"{ticker}: requoting — {reason}")
+
+        # Cancel existing orders
         if ts.bid_order:
             await self._cancel_order(ts.bid_order.order_id, ticker, "buy")
-
-        # Cancel existing ask
         if ts.ask_order:
             await self._cancel_order(ts.ask_order.order_id, ticker, "sell")
 
-        # Brief pause after cancels before placing new orders
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.2)
 
-        # Place new bid
+        # Place new quotes
         await self._place_bid(ticker, new_bid, quote_qty)
-
-        # Place new ask
         await self._place_ask(ticker, new_ask, quote_qty, ts.inventory)
 
-        ts.last_quote_time = time.monotonic()
+        # Record the quote so should_requote() knows when we last posted
+        self.state.record_quote(ticker)
 
     async def _cancel_order(self, order_id: str, ticker: str, side: str):
         if not self._can_place_order():
@@ -83,43 +93,30 @@ class OrderManager:
             await self.state.clear_order(ticker, side)
 
     async def _place_bid(self, ticker: str, price: float, qty: int):
-        """Place a limit buy order subject to cash and inventory ceiling checks."""
         # Inventory ceiling check
         cal = self.state.calibration
         if cal and ticker in cal.tickers:
             q_max = cal.tickers[ticker].q_max
             ts = self.state.tickers.get(ticker)
             if ts and ts.inventory >= q_max:
-                logger.info(
-                    f"{ticker}: at inventory ceiling ({ts.inventory}/{q_max}), "
-                    f"skipping bid"
-                )
+                logger.info(f"{ticker}: at inventory ceiling ({ts.inventory}/{q_max}), skipping bid")
                 return
 
-        # Cash check (include commission cost)
+        # Cash check
         cost = price * qty * (1.0 + self.config.COMMISSION_RATE)
         if self.state.cash_available < cost:
-            max_qty = int(
-                self.state.cash_available
-                / (price * (1.0 + self.config.COMMISSION_RATE))
-            )
+            max_qty = int(self.state.cash_available / (price * (1.0 + self.config.COMMISSION_RATE)))
             if max_qty < 1:
-                logger.info(
-                    f"{ticker}: insufficient cash for bid "
-                    f"(need ${cost:.2f}, have ${self.state.cash_available:.2f})"
-                )
+                logger.info(f"{ticker}: insufficient cash for bid (need ${cost:.2f}, have ${self.state.cash_available:.2f})")
                 return
             qty = max_qty
-            logger.debug(f"{ticker}: bid qty scaled to {qty} due to cash constraint")
 
         if not self._can_place_order():
             logger.warning(f"Rate limit: skipping bid for {ticker}")
             return
 
         try:
-            result = await self.api.place_buy_limit(
-                ticker, qty, price, self.config.ORDER_EXPIRY_HOURS
-            )
+            result = await self.api.place_buy_limit(ticker, qty, price, self.config.ORDER_EXPIRY_HOURS)
             self._record_order()
             await self.state.register_order(OpenOrder(
                 order_id=result["order_id"],
@@ -134,14 +131,12 @@ class OrderManager:
             logger.error(f"Failed to place bid {ticker} @ {price}: {e}")
 
     async def _place_ask(self, ticker: str, price: float, qty: int, inventory: int):
-        """Place a limit sell order subject to inventory floor check."""
         if inventory < 1:
             logger.info(f"{ticker}: no inventory to post ask")
             return
 
         qty = min(qty, inventory)
 
-        # Inventory floor check
         cal = self.state.calibration
         if cal and ticker in cal.tickers:
             q_max = cal.tickers[ticker].q_max
@@ -154,9 +149,7 @@ class OrderManager:
             return
 
         try:
-            result = await self.api.place_sell_limit(
-                ticker, qty, price, self.config.ORDER_EXPIRY_HOURS
-            )
+            result = await self.api.place_sell_limit(ticker, qty, price, self.config.ORDER_EXPIRY_HOURS)
             self._record_order()
             await self.state.register_order(OpenOrder(
                 order_id=result["order_id"],
@@ -171,17 +164,7 @@ class OrderManager:
             logger.error(f"Failed to place ask {ticker} @ {price}: {e}")
 
     async def active_inventory_management(self, ticker: str):
-        """
-        Chapter 2 active inventory management.
-
-        When inventory exceeds ACTIVE_THRESHOLD_PCT × q_max, the MM switches
-        from purely passive (limit orders) to also actively crossing the spread
-        via market orders. This approximates the optimal active trading rate ν*(t)
-        from Bergault Ch.2 with a threshold rule that fires when inventory risk
-        is severe enough to justify the cost of crossing the spread.
-
-        Paper reference: Bergault Ch.2 §2.2 — passive-to-active market maker.
-        """
+        """Bergault Ch.2 — go active when inventory breaches threshold."""
         cal = self.state.calibration
         if not cal or ticker not in cal.tickers:
             return
@@ -192,15 +175,12 @@ class OrderManager:
 
         q_max = cal.tickers[ticker].q_max
         threshold = q_max * self.config.ACTIVE_THRESHOLD_PCT
-        target = int(q_max * 0.5)  # Target: bring back to 50% of q_max
+        target = int(q_max * 0.5)
 
         if ts.inventory > threshold:
             excess = ts.inventory - target
             qty = max(1, int(excess * self.config.ACTIVE_UNWIND_FRACTION))
-            logger.info(
-                f"{ticker}: ACTIVE UNWIND (long) inventory={ts.inventory} "
-                f"threshold={threshold:.0f} → selling {qty} at market"
-            )
+            logger.info(f"{ticker}: ACTIVE UNWIND (long) inv={ts.inventory} → selling {qty} at market")
             if not self._can_place_order():
                 return
             try:
@@ -212,10 +192,7 @@ class OrderManager:
         elif ts.inventory < -threshold:
             excess = abs(ts.inventory) - target
             qty = max(1, int(excess * self.config.ACTIVE_UNWIND_FRACTION))
-            logger.info(
-                f"{ticker}: ACTIVE UNWIND (short) inventory={ts.inventory} "
-                f"threshold={-threshold:.0f} → buying {qty} at market"
-            )
+            logger.info(f"{ticker}: ACTIVE UNWIND (short) inv={ts.inventory} → buying {qty} at market")
             if not self._can_place_order():
                 return
             try:
@@ -224,15 +201,7 @@ class OrderManager:
             except Exception as e:
                 logger.error(f"Active buy market {ticker}: {e}")
 
-    def compute_quote_quantity(
-        self, ticker: str, allocated_capital: float, price: float
-    ) -> int:
-        """
-        Quote quantity based on allocated capital.
-        qty = floor(allocated_capital / (2 × price))
-        Factor of 2: capital must cover both the bid reservation and the
-        inventory we might acquire before selling.
-        """
+    def compute_quote_quantity(self, ticker: str, allocated_capital: float, price: float) -> int:
         if price <= 0:
             return 1
         qty = int(allocated_capital / (2.0 * price))
