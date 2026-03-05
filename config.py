@@ -83,6 +83,37 @@ POLLING_FALLBACK_SECONDS = 60
 ACTIVE_THRESHOLD_PCT = 0.80
 ACTIVE_UNWIND_FRACTION = 0.25
 
+# FIX 1 — Max fill size per quote order.
+# Caps qty posted in any single bid/ask to prevent a single counterparty
+# dumping a huge block into us (e.g. 98 RTG @ $13.10 in one fill).
+# Capital-derived qty is further capped at this hard limit.
+MAX_QUOTE_QTY = 5
+
+# FIX 2 — Price vs mu sanity gate.
+# If current market price is more than this multiple above calibrated mu,
+# the model believes the stock is significantly overvalued. In that case,
+# posting a bid risks being adversely selected by informed sellers.
+# We suppress the bid side when price > mu * PRICE_VS_MU_MAX_RATIO.
+# e.g. ratio=2.0: RTG trading at $13 with mu=$4.54 → 13/4.54=2.86 > 2.0 → no bid.
+PRICE_VS_MU_MAX_RATIO = 2.0  # suppress bid if price > 2x calibrated mu
+PRICE_VS_MU_MIN_RATIO = 0.5  # suppress ask if price < 0.5x calibrated mu
+
+# FIX 3 — Adverse selection circuit breaker.
+# If inventory for a ticker jumps by more than this amount in a single
+# polling cycle, it means someone just hit us for a large block — a classic
+# sign of informed trading. Pause quoting that ticker for this many minutes.
+ADVERSE_SELECTION_JUMP = 10       # shares: inventory jump that triggers pause
+ADVERSE_SELECTION_PAUSE_MINUTES = 30  # how long to pause quoting after detection
+
+# FIX 4 — Active unwind via aggressive limit orders instead of market orders.
+# NER's /orders/sell_market endpoint returns 400 unless there's an active
+# counterparty. Instead, post a limit order at a small discount to best bid
+# to guarantee a fill without requiring a market order endpoint.
+# UNWIND_LIMIT_DISCOUNT: how far below best bid to place the unwind limit.
+# 0.0 = at best bid (join queue), 0.02 = 2% below best bid (more aggressive).
+UNWIND_LIMIT_DISCOUNT = 0.01     # 1% below best bid for fast fills
+UNWIND_LIMIT_EXPIRY_HOURS = 0.25  # 15 min expiry — if unfilled, retry next cycle
+
 # ── Capital allocation ────────────────────────────────────────────────────────
 REALLOC_INTERVAL_MINUTES = 120
 
