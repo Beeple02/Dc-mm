@@ -343,6 +343,46 @@ class MarketMakingBot:
         )
         qty = om.compute_quote_quantity(ticker, allocated, mid)
 
+        # FIX 2: Price vs mu sanity gate — suppress bid if price >> mu (overvalued)
+        # and suppress ask if price << mu (undervalued). This prevents the model
+        # from quoting bids into a stock that fundamental calibration says is
+        # massively overpriced (e.g. RTG at $13 with mu=$4.54).
+        if tc.is_ou and tc.mu and tc.mu > 0:
+            price_to_mu = mid / tc.mu
+            max_ratio = getattr(cfg, 'PRICE_VS_MU_MAX_RATIO', 2.0)
+            min_ratio = getattr(cfg, 'PRICE_VS_MU_MIN_RATIO', 0.5)
+            if price_to_mu > max_ratio:
+                logger.warning(
+                    f"{ticker}: BID SUPPRESSED — price/mu={price_to_mu:.2f} > {max_ratio} "
+                    f"(mid={mid:.2f}, mu={tc.mu:.2f}) — stock appears overvalued, skipping bid"
+                )
+                quotes.bid = -1.0  # signal to refresh_quotes to skip bid
+            elif price_to_mu < min_ratio:
+                logger.warning(
+                    f"{ticker}: ASK SUPPRESSED — price/mu={price_to_mu:.2f} < {min_ratio} "
+                    f"(mid={mid:.2f}, mu={tc.mu:.2f}) — stock appears undervalued, skipping ask"
+                )
+                quotes.ask = float('inf')  # signal to skip ask
+
+        # FIX 3: Adverse selection circuit breaker.
+        # Detect sudden inventory jumps (someone dumped a large block into us).
+        jump_threshold = getattr(cfg, 'ADVERSE_SELECTION_JUMP', 10)
+        pause_minutes = getattr(cfg, 'ADVERSE_SELECTION_PAUSE_MINUTES', 30)
+        prev_inv = getattr(ts, '_prev_inventory', ts.inventory)
+        inv_jump = abs(ts.inventory - prev_inv)
+        if inv_jump >= jump_threshold:
+            logger.warning(
+                f"{ticker}: ADVERSE SELECTION DETECTED — inventory jumped "
+                f"{prev_inv} → {ts.inventory} ({inv_jump:+d} shares). "
+                f"Pausing quoting for {pause_minutes} min."
+            )
+            self.state.pause_ticker(ticker, pause_minutes)
+        ts._prev_inventory = ts.inventory
+
+        if self.state.is_paused(ticker):
+            logger.info(f"{ticker}: quoting paused (adverse selection cooldown)")
+            return
+
         # Cancel stale quotes and post fresh ones
         await om.refresh_quotes(ticker, quotes, qty)
 
