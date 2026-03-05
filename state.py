@@ -1,6 +1,4 @@
 # state.py
-# Tracks live bot state: inventory, open orders, session timing, fills.
-
 import asyncio
 import logging
 import time
@@ -15,10 +13,10 @@ logger = logging.getLogger(__name__)
 class OpenOrder:
     order_id: str
     ticker: str
-    side: str           # "buy" or "sell"
+    side: str
     price: float
     quantity: int
-    placed_at: float    # monotonic time
+    placed_at: float
     expiry_hours: int
 
 
@@ -33,17 +31,13 @@ class TickerState:
     mid: Optional[float] = None
     bid_order: Optional[OpenOrder] = None
     ask_order: Optional[OpenOrder] = None
-    last_quote_time: float = 0.0
+    last_quote_time: float = 0.0       # monotonic time of last requote
+    last_quoted_mid: Optional[float] = None  # mid price when quotes were last posted
     allocated_capital: float = 0.0
     total_shares: int = 1000
 
 
 class BotState:
-    """
-    Central state container for the MM bot.
-    All mutation goes through async methods protected by a lock.
-    """
-
     def __init__(self, config):
         self.config = config
         self._lock = asyncio.Lock()
@@ -53,21 +47,17 @@ class BotState:
         self.cash_reserved: float = 0.0
         self.total_equity: float = 0.0
 
-        # Session timing
         self.session_start: float = time.monotonic()
         self.T_hours: float = config.T_HORIZON_HOURS
 
-        # Calibration (set after calibration completes)
         self.calibration = None
         self.ode_solutions: dict = {}
         self.riccati_A: Optional[np.ndarray] = None
 
-        # Webhook liveness
         self.webhook_alive: bool = False
         self.last_webhook_time: float = 0.0
 
     def t_remaining(self) -> float:
-        """Time remaining in current T-horizon session (hours)."""
         elapsed = (time.monotonic() - self.session_start) / 3600.0
         remaining = self.T_hours - (elapsed % self.T_hours)
         return max(remaining, 1e-3)
@@ -127,10 +117,6 @@ class BotState:
                 ts.ask_order = None
 
     async def reconcile_open_orders(self, open_orders: list[dict]):
-        """
-        Compare known resting orders against the API's live open order list.
-        Orders that have disappeared were either filled or expired — clear them.
-        """
         async with self._lock:
             open_ids = {o["order_id"] for o in open_orders}
             for ticker, ts in self.tickers.items():
@@ -144,32 +130,53 @@ class BotState:
                         )
                         setattr(ts, side_attr, None)
 
-    def is_quote_stale(self, ticker: str, new_bid: float, new_ask: float) -> bool:
+    def should_requote(self, ticker: str, new_bid: float, new_ask: float) -> tuple[bool, str]:
         """
-        True if the current resting quotes differ from the new theoretical
-        quotes by more than QUOTE_STALE_THRESHOLD, or if no resting orders exist.
+        Returns (should_requote, reason).
+
+        Requote only if ALL of the following are true:
+          1. Minimum time interval has elapsed since last requote
+          2. Mid price has moved by more than QUOTE_STALE_THRESHOLD since last quote
+             OR there are no resting orders at all
+
+        t_remaining drift alone is NOT a reason to requote — on a 24h horizon
+        the ODE output barely changes over 10 minutes, and requoting every 15s
+        was generating the majority of all NER weekly order volume.
         """
         ts = self.tickers.get(ticker)
         if not ts:
-            return True
+            return True, "no state"
 
-        threshold = self.config.QUOTE_STALE_THRESHOLD
+        # Check 1: minimum time interval
+        min_interval_secs = self.config.MIN_REQUOTE_INTERVAL_MINUTES * 60
+        time_since_last = time.monotonic() - ts.last_quote_time
+        if time_since_last < min_interval_secs:
+            return False, f"too soon ({time_since_last:.0f}s < {min_interval_secs:.0f}s)"
 
-        if ts.bid_order:
-            rel_diff = abs(ts.bid_order.price - new_bid) / max(new_bid, 0.01)
-            if rel_diff > threshold:
-                return True
+        # Check 2: no resting orders → always post
+        has_bid = ts.bid_order is not None
+        has_ask = ts.ask_order is not None
+        if not has_bid and not has_ask:
+            return True, "no resting orders"
+
+        # Check 3: mid price moved enough since last quote
+        current_mid = ts.mid or ts.market_price
+        if current_mid and ts.last_quoted_mid:
+            rel_move = abs(current_mid - ts.last_quoted_mid) / max(ts.last_quoted_mid, 1e-6)
+            if rel_move > self.config.QUOTE_STALE_THRESHOLD:
+                return True, f"mid moved {rel_move:.1%}"
+            else:
+                return False, f"mid only moved {rel_move:.1%} < {self.config.QUOTE_STALE_THRESHOLD:.1%}"
         else:
-            return True
+            # No last mid recorded — post
+            return True, "no prior mid recorded"
 
-        if ts.ask_order:
-            rel_diff = abs(ts.ask_order.price - new_ask) / max(new_ask, 0.01)
-            if rel_diff > threshold:
-                return True
-        else:
-            return True
-
-        return False
+    def record_quote(self, ticker: str):
+        """Call after successfully posting quotes for a ticker."""
+        ts = self.tickers.get(ticker)
+        if ts:
+            ts.last_quote_time = time.monotonic()
+            ts.last_quoted_mid = ts.mid or ts.market_price
 
     def get_inventory_vector(self, ticker_list: list[str]) -> np.ndarray:
         return np.array(
