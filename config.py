@@ -43,6 +43,13 @@ OU_ADJ_MAX_PCT = 0.10
 QUOTE_MIN_PCT_OF_MID = 0.50     # Bid must be >= 50% of mid
 QUOTE_MAX_PCT_OF_MID = 2.00     # Ask must be <= 200% of mid
 
+# ── Intensity function ───────────────────────────────────────────────────────
+# NER markets are much more active in the evening (server peak hours).
+# Daytime calibration underestimates lambda_A, producing spreads too wide to fill.
+# This multiplier scales up the fitted arrival rate to reflect peak-hour activity.
+# 3x is conservative — adjust based on observed evening fill rates.
+EVENING_BOOST = 3.0
+
 # ── Objective function ────────────────────────────────────────────────────────
 OBJECTIVE_FUNCTION = "auto"
 OBJECTIVE_AUTO_PVALUE_THRESHOLD = 0.05
