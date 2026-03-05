@@ -634,8 +634,10 @@ async def calibrate_all(
         else:
             xi = gamma
 
-        # Inventory limit
-        q_max = max(1, int(total_shares * config.INVENTORY_LIMIT_PCT))
+        # Inventory limit: min of percentage-based and absolute cap
+        q_max_pct = max(1, int(total_shares * config.INVENTORY_LIMIT_PCT))
+        q_max_abs = getattr(config, 'INVENTORY_LIMIT_ABS', 50)
+        q_max = min(q_max_pct, q_max_abs)
 
         # Trades per hour
         trades_per_hour = len(sorted_clean) / max(total_hours, 1.0)
