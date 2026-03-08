@@ -431,6 +431,14 @@ class MarketMakingBot:
                 }
 
             @app.get("/status")
+            def _safe(v):
+                """Sanitize float values for JSON — replace nan/inf with null."""
+                if isinstance(v, float):
+                    import math
+                    if math.isnan(v) or math.isinf(v):
+                        return None
+                return v
+
             async def status():
                 """
                 Rich status endpoint for the monitoring dashboard.
@@ -453,7 +461,7 @@ class MarketMakingBot:
                     tickers_out.append({
                         "ticker": ticker,
                         "selected": ticker in (sr.selected_tickers if sr else []),
-                        "mid": mid,
+                        "mid": _safe(mid),
                         "best_bid": ts.best_bid,
                         "best_ask": ts.best_ask,
                         "inventory": ts.inventory,
@@ -499,17 +507,17 @@ class MarketMakingBot:
                         sc = sr.scores.get(t) if sr else None
                         cal_debug[t] = {
                             "source": tc.source,
-                            "mid": tc.mid,
-                            "market_price": tc.market_price,
-                            "sigma": round(tc.sigma, 6),
-                            "sigma_long_run": round(tc.sigma_long_run, 6),
-                            "atlas_vol_7d": tc.atlas_vol_7d,
-                            "trades_per_day": round(tc.trades_per_day, 3),
-                            "drift_score": round(tc.drift_score, 4),
-                            "mean_reversion_score": round(tc.mean_reversion_score, 4),
-                            "liquidity_score": tc.liquidity_score,
+                            "mid": _safe(tc.mid),
+                            "market_price": _safe(tc.market_price),
+                            "sigma": _safe(round(tc.sigma, 6)),
+                            "sigma_long_run": _safe(round(tc.sigma_long_run, 6)),
+                            "atlas_vol_7d": _safe(tc.atlas_vol_7d),
+                            "trades_per_day": _safe(round(tc.trades_per_day, 3)),
+                            "drift_score": _safe(round(tc.drift_score, 4)),
+                            "mean_reversion_score": _safe(round(tc.mean_reversion_score, 4)),
+                            "liquidity_score": _safe(tc.liquidity_score),
                             "eligible": tc.eligible,
-                            "score": round(sc.raw_score, 4) if sc else None,
+                            "score": _safe(round(sc.raw_score, 4)) if sc else None,
                         }
 
                 return JSONResponse({
