@@ -104,6 +104,7 @@ def run_scorer(
     eligible = [
         t for t in calibration.eligible_tickers
         if calibration.tickers[t].eligible
+        and (cfg.TSE_QUOTING_ENABLED or calibration.tickers[t].source != "tse")
     ]
 
     if not eligible:
