@@ -9,6 +9,11 @@ ATLAS_API_KEY  = os.environ.get("ATLAS_API_KEY", "")
 NER_BASE_URL = os.environ.get("NER_BASE_URL", "")
 NER_API_KEY  = os.environ.get("NER_API_KEY", "")
 
+# TSE (The Stock Exchange) — trading API for TSE-listed tickers
+# TSE_BASE_URL and TSE_API_KEY are required when TSE_QUOTING_ENABLED=true
+TSE_BASE_URL = os.environ.get("TSE_BASE_URL", "")
+TSE_API_KEY  = os.environ.get("TSE_API_KEY", "")
+
 # ── Capital management ────────────────────────────────────────────────────────
 TOTAL_CAPITAL       = float(os.environ.get("TOTAL_CAPITAL", 10_000))
 CAPITAL_DEPLOY_MAX  = 0.60   # never deploy more than 60% simultaneously
