@@ -238,7 +238,10 @@ def compute_drift_score(prices: np.ndarray, times_hours: np.ndarray, window: int
         return 0.0
     log_prices = np.log(np.maximum(recent, 1e-10))
     slope, _, r, _, _ = stats.linregress(times, log_prices)
-    return float(np.clip(r**2 * min(abs(slope) * 10.0, 2.0), 0.0, 2.0))
+    val = r**2 * min(abs(slope) * 10.0, 2.0)
+    if np.isnan(val) or np.isinf(val):
+        return 0.0
+    return float(np.clip(val, 0.0, 2.0))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
