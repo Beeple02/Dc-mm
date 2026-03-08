@@ -169,9 +169,12 @@ class NERClient:
     # ── Webhook management ────────────────────────────────────────────────────
 
     async def configure_webhook(self, url: str, secret: str = "") -> dict:
+        body = {"webhook_url": url, "enabled": True}
+        if secret:
+            body["secret"] = secret
         r = await self._client.put(
             "/api-management/config",
-            json={"webhook_url": url, "enabled": True, "secret": secret},
+            json=body,
         )
         r.raise_for_status()
         return r.json()
