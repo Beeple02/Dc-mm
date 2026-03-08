@@ -12,12 +12,22 @@ logger = logging.getLogger(__name__)
 
 class OrderManager:
 
-    def __init__(self, ner_client, state: BotState, risk: RiskManager, cfg):
+    def __init__(self, ner_client, state: BotState, risk: RiskManager, cfg,
+                 tse_client=None):
         self.ner = ner_client
+        self.tse = tse_client        # None if TSE_QUOTING_ENABLED=false
         self.state = state
         self.risk = risk
         self.cfg = cfg
         self._order_times: list[float] = []
+
+    def _client_for(self, ticker: str):
+        """Return the correct exchange client for this ticker."""
+        ts = self.state.tickers.get(ticker)
+        source = ts.source if ts else "ner"
+        if source == "tse" and self.tse is not None:
+            return self.tse
+        return self.ner
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
 
@@ -189,7 +199,7 @@ class OrderManager:
             logger.warning(f"Rate limit: skipping cancel {order_id}")
             return
         try:
-            await self.ner.cancel_order(order_id)
+            await self._client_for(ticker).cancel_order(order_id)
             self._record_order()
         except Exception as e:
             logger.warning(f"Cancel {order_id} failed: {e}")
@@ -215,7 +225,7 @@ class OrderManager:
             return
 
         try:
-            result = await self.ner.place_buy_limit(
+            result = await self._client_for(ticker).place_buy_limit(
                 ticker, qty, price, self.cfg.ORDER_EXPIRY_HOURS
             )
             self._record_order()
@@ -247,7 +257,7 @@ class OrderManager:
             return
 
         try:
-            result = await self.ner.place_sell_limit(
+            result = await self._client_for(ticker).place_sell_limit(
                 ticker, qty, price, self.cfg.ORDER_EXPIRY_HOURS
             )
             self._record_order()
@@ -268,7 +278,7 @@ class OrderManager:
             logger.warning(f"Rate limit: skipping unwind sell {ticker}")
             return
         try:
-            result = await self.ner.place_sell_limit(
+            result = await self._client_for(ticker).place_sell_limit(
                 ticker, qty, price, self.cfg.UNWIND_ORDER_EXPIRY
             )
             self._record_order()
@@ -293,7 +303,7 @@ class OrderManager:
             logger.warning(f"Rate limit: skipping unwind buy {ticker}")
             return
         try:
-            result = await self.ner.place_buy_limit(
+            result = await self._client_for(ticker).place_buy_limit(
                 ticker, qty, price, self.cfg.UNWIND_ORDER_EXPIRY
             )
             self._record_order()
@@ -313,9 +323,9 @@ class OrderManager:
                 await self._try_market_buy(ticker, qty)
 
     async def _try_market_sell(self, ticker: str, qty: int):
-        """Last resort market sell — may fail on NER if no counterparty."""
+        """Last resort market sell."""
         try:
-            await self.ner.place_sell_market(ticker, qty)
+            await self._client_for(ticker).place_sell_market(ticker, qty)
             self._record_order()
             logger.warning(f"{ticker}: emergency market sell {qty}")
         except Exception as e:
@@ -324,7 +334,7 @@ class OrderManager:
     async def _try_market_buy(self, ticker: str, qty: int):
         """Last resort market buy."""
         try:
-            await self.ner.place_buy_market(ticker, qty)
+            await self._client_for(ticker).place_buy_market(ticker, qty)
             self._record_order()
             logger.warning(f"{ticker}: emergency market buy {qty}")
         except Exception as e:
