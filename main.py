@@ -47,6 +47,18 @@ def _safe(v):
     return v
 
 
+def _sanitize(obj):
+    """Recursively replace nan/inf floats with None for JSON compliance."""
+    import math
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
 class MarketMakingBot:
 
     def __init__(self):
@@ -443,121 +455,100 @@ class MarketMakingBot:
                 }
 
             @app.get("/status")
-            def _sanitize(obj):
-                """Recursively replace nan/inf floats with None for JSON compliance."""
-                import math
-                if isinstance(obj, float):
-                    return None if (math.isnan(obj) or math.isinf(obj)) else obj
-                if isinstance(obj, dict):
-                    return {k: _sanitize(v) for k, v in obj.items()}
-                if isinstance(obj, list):
-                    return [_sanitize(v) for v in obj]
-                return obj
-
             async def status():
-                """
-                Rich status endpoint for the monitoring dashboard.
-                Returns all bot state in one payload.
-                """
+                """Rich status endpoint for the monitoring dashboard."""
                 from fastapi.responses import JSONResponse
+                try:
+                    cal = self.state.calibration
+                    sr  = self.state.scorer_result
 
-                cal = self.state.calibration
-                sr  = self.state.scorer_result
+                    # Per-ticker status
+                    tickers_out = []
+                    for ticker, ts in self.state.tickers.items():
+                        tc = cal.tickers.get(ticker) if cal else None
+                        sc = sr.scores.get(ticker) if sr else None
+                        tr = self.risk.state.tickers.get(ticker)
+                        mid = ts.mid or ts.market_price or 0.0
+                        tickers_out.append({
+                            "ticker": ticker,
+                            "selected": ticker in (sr.selected_tickers if sr else []),
+                            "mid": _safe(mid),
+                            "best_bid": ts.best_bid,
+                            "best_ask": ts.best_ask,
+                            "inventory": ts.inventory,
+                            "cost_basis": ts.cost_basis,
+                            "allocated_capital": ts.allocated_capital,
+                            "q_max": ts.q_max,
+                            "bid_order": {
+                                "price": ts.bid_order.price,
+                                "qty": ts.bid_order.quantity,
+                                "order_id": ts.bid_order.order_id,
+                            } if ts.bid_order else None,
+                            "ask_order": {
+                                "price": ts.ask_order.price,
+                                "qty": ts.ask_order.quantity,
+                                "order_id": ts.ask_order.order_id,
+                            } if ts.ask_order else None,
+                            "unwind_order": {
+                                "price": ts.unwind_order.price,
+                                "qty": ts.unwind_order.quantity,
+                                "side": ts.unwind_order.side,
+                            } if ts.unwind_order else None,
+                            "unrealized_pnl": tr.unrealized_pnl if tr else 0.0,
+                            "realized_pnl": tr.realized_pnl if tr else 0.0,
+                            "is_stopped": tr.is_stopped if tr else False,
+                            "unwind_attempts": tr.unwind_attempts if tr else 0,
+                            "sigma": _safe(tc.sigma) if tc else None,
+                            "drift_score": _safe(tc.drift_score) if tc else None,
+                            "mean_reversion_score": _safe(tc.mean_reversion_score) if tc else None,
+                            "trades_per_day": _safe(tc.trades_per_day) if tc else None,
+                            "eligible": tc.eligible if tc else False,
+                            "score": _safe(sc.raw_score) if sc else None,
+                            "score_components": sc.components if sc else None,
+                        })
 
-                # Per-ticker status
-                tickers_out = []
-                for ticker, ts in self.state.tickers.items():
-                    tc = cal.tickers.get(ticker) if cal else None
-                    sc = sr.scores.get(ticker) if sr else None
-                    tr = self.risk.state.tickers.get(ticker)
+                    # Calibration debug — all tickers
+                    cal_debug = {}
+                    if cal:
+                        for t, tc in cal.tickers.items():
+                            sc = sr.scores.get(t) if sr else None
+                            cal_debug[t] = {
+                                "source": tc.source,
+                                "mid": _safe(tc.mid),
+                                "market_price": _safe(tc.market_price),
+                                "sigma": _safe(round(tc.sigma, 6)),
+                                "sigma_long_run": _safe(round(tc.sigma_long_run, 6)),
+                                "atlas_vol_7d": _safe(tc.atlas_vol_7d),
+                                "trades_per_day": _safe(round(tc.trades_per_day, 3)),
+                                "drift_score": _safe(round(tc.drift_score, 4)),
+                                "mean_reversion_score": _safe(round(tc.mean_reversion_score, 4)),
+                                "liquidity_score": _safe(tc.liquidity_score),
+                                "eligible": tc.eligible,
+                                "score": _safe(round(sc.raw_score, 4)) if sc else None,
+                            }
 
-                    mid = ts.mid or ts.market_price or 0.0
-
-                    tickers_out.append({
-                        "ticker": ticker,
-                        "selected": ticker in (sr.selected_tickers if sr else []),
-                        "mid": _safe(mid),
-                        "best_bid": ts.best_bid,
-                        "best_ask": ts.best_ask,
-                        "inventory": ts.inventory,
-                        "cost_basis": ts.cost_basis,
-                        "allocated_capital": ts.allocated_capital,
-                        "q_max": ts.q_max,
-                        # Live quotes
-                        "bid_order": {
-                            "price": ts.bid_order.price,
-                            "qty": ts.bid_order.quantity,
-                            "order_id": ts.bid_order.order_id,
-                        } if ts.bid_order else None,
-                        "ask_order": {
-                            "price": ts.ask_order.price,
-                            "qty": ts.ask_order.quantity,
-                            "order_id": ts.ask_order.order_id,
-                        } if ts.ask_order else None,
-                        "unwind_order": {
-                            "price": ts.unwind_order.price,
-                            "qty": ts.unwind_order.quantity,
-                            "side": ts.unwind_order.side,
-                        } if ts.unwind_order else None,
-                        # Risk
-                        "unrealized_pnl": tr.unrealized_pnl if tr else 0.0,
-                        "realized_pnl": tr.realized_pnl if tr else 0.0,
-                        "is_stopped": tr.is_stopped if tr else False,
-                        "unwind_attempts": tr.unwind_attempts if tr else 0,
-                        # Calibration
-                        "sigma": tc.sigma if tc else None,
-                        "drift_score": tc.drift_score if tc else None,
-                        "mean_reversion_score": tc.mean_reversion_score if tc else None,
-                        "trades_per_day": tc.trades_per_day if tc else None,
-                        "eligible": tc.eligible if tc else False,
-                        # Scorer
-                        "score": sc.raw_score if sc else None,
-                        "score_components": sc.components if sc else None,
-                    })
-
-                # Calibration debug — all tickers, not just selected ones
-                cal_debug = {}
-                if cal:
-                    for t, tc in cal.tickers.items():
-                        sc = sr.scores.get(t) if sr else None
-                        cal_debug[t] = {
-                            "source": tc.source,
-                            "mid": _safe(tc.mid),
-                            "market_price": _safe(tc.market_price),
-                            "sigma": _safe(round(tc.sigma, 6)),
-                            "sigma_long_run": _safe(round(tc.sigma_long_run, 6)),
-                            "atlas_vol_7d": _safe(tc.atlas_vol_7d),
-                            "trades_per_day": _safe(round(tc.trades_per_day, 3)),
-                            "drift_score": _safe(round(tc.drift_score, 4)),
-                            "mean_reversion_score": _safe(round(tc.mean_reversion_score, 4)),
-                            "liquidity_score": _safe(tc.liquidity_score),
-                            "eligible": tc.eligible,
-                            "score": _safe(round(sc.raw_score, 4)) if sc else None,
-                        }
-
-                return JSONResponse(_sanitize({
-                    "ts": time.time(),
-                    "uptime_hours": (time.monotonic() - self.state.session_start) / 3600.0,
-                    "t_remaining_hours": self.state.t_remaining(),
-                    # Portfolio
-                    "cash_available": self.state.cash_available,
-                    "cash_reserved": self.state.cash_reserved,
-                    "total_equity": self.state.total_equity,
-                    # Risk
-                    "portfolio_stopped": self.risk.state.portfolio_stopped,
-                    "total_unrealized_pnl": self.risk.state.total_unrealized_pnl,
-                    "total_realized_pnl": self.risk.state.total_realized_pnl,
-                    # Bot config
-                    "total_capital": cfg.TOTAL_CAPITAL,
-                    "stop_loss_per_ticker": cfg.STOP_LOSS_PER_TICKER,
-                    "stop_loss_portfolio": cfg.STOP_LOSS_PORTFOLIO,
-                    "webhook_alive": self.state.webhook_alive,
-                    "selected_tickers": sr.selected_tickers if sr else [],
-                    "tickers": tickers_out,
-                    # Full calibration debug (all tickers, not just selected)
-                    "calibration_debug": cal_debug,
-                    "calibration_eligible": cal.eligible_tickers if cal else [],
-                }))
+                    return JSONResponse(_sanitize({
+                        "ts": time.time(),
+                        "uptime_hours": (time.monotonic() - self.state.session_start) / 3600.0,
+                        "t_remaining_hours": self.state.t_remaining(),
+                        "cash_available": self.state.cash_available,
+                        "cash_reserved": self.state.cash_reserved,
+                        "total_equity": self.state.total_equity,
+                        "portfolio_stopped": self.risk.state.portfolio_stopped,
+                        "total_unrealized_pnl": self.risk.state.total_unrealized_pnl,
+                        "total_realized_pnl": self.risk.state.total_realized_pnl,
+                        "total_capital": cfg.TOTAL_CAPITAL,
+                        "stop_loss_per_ticker": cfg.STOP_LOSS_PER_TICKER,
+                        "stop_loss_portfolio": cfg.STOP_LOSS_PORTFOLIO,
+                        "webhook_alive": self.state.webhook_alive,
+                        "selected_tickers": sr.selected_tickers if sr else [],
+                        "tickers": tickers_out,
+                        "calibration_debug": cal_debug,
+                        "calibration_eligible": cal.eligible_tickers if cal else [],
+                    }))
+                except Exception as e:
+                    logger.error(f"Status endpoint error: {e}", exc_info=True)
+                    return JSONResponse({"error": str(e), "ts": time.time()}, status_code=200)
 
             server_cfg = uvicorn.Config(
                 app,
