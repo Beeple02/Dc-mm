@@ -37,6 +37,7 @@ class TickerState:
     allocated_capital: float = 0.0
     q_max: int = 10
     total_shares: int = 1000
+    source: str = "ner"              # "ner" or "tse" — determines which client to use
     # Track previous inventory for adverse selection detection
     _prev_inventory: int = 0
 
