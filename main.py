@@ -383,10 +383,13 @@ class MarketMakingBot:
             try:
                 with open(_dashboard_path, "r") as f:
                     _dashboard_html = f.read()
-                # Patch BOT_URL so dashboard always uses relative /status (same origin)
-                _dashboard_html = _dashboard_html.replace(
-                    "const BOT_URL = window.location.hostname === \'localhost\'\n  ? \'http://localhost:8000\'\n  : \'\'",
-                    "const BOT_URL = \'\'"
+                # Patch BOT_URL — regex replace any value so dashboard always
+                # uses relative /status (same origin, works on Railway)
+                import re as _re
+                _dashboard_html = _re.sub(
+                    r'const BOT_URL\s*=\s*.+',
+                    "const BOT_URL = ''",
+                    _dashboard_html
                 )
             except FileNotFoundError:
                 _dashboard_html = "<h1 style=\'font-family:monospace;color:#c8ff00;background:#000;padding:40px\'>dashboard.html not found alongside main.py</h1>"
