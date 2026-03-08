@@ -38,6 +38,15 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
+def _safe(v):
+    """Sanitize float for JSON — replace nan/inf with None."""
+    if isinstance(v, float):
+        import math
+        if math.isnan(v) or math.isinf(v):
+            return None
+    return v
+
+
 class MarketMakingBot:
 
     def __init__(self):
@@ -434,13 +443,16 @@ class MarketMakingBot:
                 }
 
             @app.get("/status")
-            def _safe(v):
-                """Sanitize float values for JSON — replace nan/inf with null."""
-                if isinstance(v, float):
-                    import math
-                    if math.isnan(v) or math.isinf(v):
-                        return None
-                return v
+            def _sanitize(obj):
+                """Recursively replace nan/inf floats with None for JSON compliance."""
+                import math
+                if isinstance(obj, float):
+                    return None if (math.isnan(obj) or math.isinf(obj)) else obj
+                if isinstance(obj, dict):
+                    return {k: _sanitize(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_sanitize(v) for v in obj]
+                return obj
 
             async def status():
                 """
@@ -523,7 +535,7 @@ class MarketMakingBot:
                             "score": _safe(round(sc.raw_score, 4)) if sc else None,
                         }
 
-                return JSONResponse({
+                return JSONResponse(_sanitize({
                     "ts": time.time(),
                     "uptime_hours": (time.monotonic() - self.state.session_start) / 3600.0,
                     "t_remaining_hours": self.state.t_remaining(),
@@ -545,7 +557,7 @@ class MarketMakingBot:
                     # Full calibration debug (all tickers, not just selected)
                     "calibration_debug": cal_debug,
                     "calibration_eligible": cal.eligible_tickers if cal else [],
-                })
+                }))
 
             server_cfg = uvicorn.Config(
                 app,
