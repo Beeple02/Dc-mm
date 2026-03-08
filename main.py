@@ -174,7 +174,13 @@ class MarketMakingBot:
             await ner.subscribe_webhook_all()
             logger.info(f"Webhook registered: {url}")
         except Exception as e:
-            logger.warning(f"Webhook setup failed: {e} — polling fallback active")
+            # Log response body if available to diagnose NER webhook 500
+            body = ""
+            try:
+                body = e.response.text[:300]
+            except Exception:
+                pass
+            logger.warning(f"Webhook setup failed: {e}{(' | body: ' + body) if body else ''} — polling fallback active")
 
     # ── Core quoting pipeline ─────────────────────────────────────────────────
 
@@ -486,6 +492,26 @@ class MarketMakingBot:
                         "score_components": sc.components if sc else None,
                     })
 
+                # Calibration debug — all tickers, not just selected ones
+                cal_debug = {}
+                if cal:
+                    for t, tc in cal.tickers.items():
+                        sc = sr.scores.get(t) if sr else None
+                        cal_debug[t] = {
+                            "source": tc.source,
+                            "mid": tc.mid,
+                            "market_price": tc.market_price,
+                            "sigma": round(tc.sigma, 6),
+                            "sigma_long_run": round(tc.sigma_long_run, 6),
+                            "atlas_vol_7d": tc.atlas_vol_7d,
+                            "trades_per_day": round(tc.trades_per_day, 3),
+                            "drift_score": round(tc.drift_score, 4),
+                            "mean_reversion_score": round(tc.mean_reversion_score, 4),
+                            "liquidity_score": tc.liquidity_score,
+                            "eligible": tc.eligible,
+                            "score": round(sc.raw_score, 4) if sc else None,
+                        }
+
                 return JSONResponse({
                     "ts": time.time(),
                     "uptime_hours": (time.monotonic() - self.state.session_start) / 3600.0,
@@ -505,6 +531,9 @@ class MarketMakingBot:
                     "webhook_alive": self.state.webhook_alive,
                     "selected_tickers": sr.selected_tickers if sr else [],
                     "tickers": tickers_out,
+                    # Full calibration debug (all tickers, not just selected)
+                    "calibration_debug": cal_debug,
+                    "calibration_eligible": cal.eligible_tickers if cal else [],
                 })
 
             server_cfg = uvicorn.Config(
