@@ -188,6 +188,13 @@ def fit_ou_process(
 
     y = prices[1:]
     x = prices[:-1]
+
+    # Can't fit regression if all x values are identical (constant price series)
+    if np.std(x) < 1e-10:
+        return 0.0, float(np.mean(prices)), False
+    # Guard: linregress crashes if all x values are identical (constant price series)
+    if np.std(x) < 1e-10:
+        return 0.0, float(np.mean(prices)), False
     slope, intercept, r, p, _ = stats.linregress(x, y)
 
     if slope >= 1.0 or slope <= 0.0:
@@ -237,6 +244,8 @@ def compute_drift_score(prices: np.ndarray, times_hours: np.ndarray, window: int
     if len(recent) < 3:
         return 0.0
     log_prices = np.log(np.maximum(recent, 1e-10))
+    if np.std(times) < 1e-10 or np.std(log_prices) < 1e-10:
+        return 0.0
     slope, _, r, _, _ = stats.linregress(times, log_prices)
     val = r**2 * min(abs(slope) * 10.0, 2.0)
     if np.isnan(val) or np.isinf(val):
