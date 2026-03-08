@@ -65,9 +65,9 @@ SCORER_W5 = 2.5   # drift penalty (most dangerous for MM)
 SCORER_W6 = 1.0   # vol-of-vol penalty
 
 # Minimum score to be eligible for quoting at all
-SCORER_MIN_ELIGIBLE    = 0.20
+SCORER_MIN_ELIGIBLE    = 0.05   # lowered — NER is a thin market
 # Minimum trades per day to even consider a ticker
-SCORER_MIN_TRADES_DAY  = 0.3    # roughly 2+ trades per week
+SCORER_MIN_TRADES_DAY  = 0.05   # ~1 trade per 3 weeks minimum — NER is thin
 
 # ── Capital allocation across scored tickers ──────────────────────────────────
 # Allocated notional = TOTAL_CAPITAL · CAPITAL_DEPLOY_MAX · liquidity_weight
