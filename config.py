@@ -14,7 +14,7 @@ TOTAL_CAPITAL       = float(os.environ.get("TOTAL_CAPITAL", 10_000))
 CAPITAL_DEPLOY_MAX  = 0.60   # never deploy more than 60% simultaneously
 CAPITAL_RESERVE     = 0.40   # always keep 40% liquid
 
-MAX_TICKERS_QUOTED  = 3      # quote at most 3 tickers at once
+MAX_TICKERS_QUOTED  = int(os.environ.get("MAX_TICKERS", "3"))  # override via Railway env var
 
 # ── Risk limits ───────────────────────────────────────────────────────────────
 STOP_LOSS_PER_TICKER  = 400.0   # unrealized loss per ticker → stop + unwind
