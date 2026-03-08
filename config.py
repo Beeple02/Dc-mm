@@ -98,6 +98,11 @@ T_RESET_HOURS              = 24.0
 # ── Tickers to always ignore ──────────────────────────────────────────────────
 EXCLUDED_TICKERS = {"RNHC", "RNC-B", "VSP3"}
 
+# Set to True to include TSE tickers in scoring/quoting.
+# TSE tickers use format "TSE:ECO" etc. They are calibrated regardless,
+# but only selected for quoting when this is enabled.
+TSE_QUOTING_ENABLED = os.environ.get("TSE_QUOTING_ENABLED", "false").lower() == "true"
+
 # ── Webhook ───────────────────────────────────────────────────────────────────
 WEBHOOK_HOST    = "0.0.0.0"
 WEBHOOK_PORT    = int(os.environ.get("PORT", 8000))
