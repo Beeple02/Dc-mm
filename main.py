@@ -17,6 +17,7 @@ import time
 import config as cfg
 from atlas_client import AtlasClient
 from ner_client import NERClient
+from tse_client import TSEClient
 from calibration import calibrate_all
 from scorer import run_scorer
 from quoting import compute_quotes, compute_quote_quantity
@@ -172,6 +173,8 @@ class MarketMakingBot:
                     ts.allocated_capital = score.allocated_capital
                     ts.q_max = score.q_max
                     cal.tickers[ticker].q_max = score.q_max
+                    # Propagate exchange source so OrderManager routes correctly
+                    ts.source = cal.tickers[ticker].source
 
                 logger.info(
                     f"Selected tickers: {scorer_result.selected_tickers} | "
@@ -569,35 +572,50 @@ class MarketMakingBot:
         if not cfg.NER_API_KEY:
             raise ValueError("NER_API_KEY not set")
 
+        tse_enabled = cfg.TSE_QUOTING_ENABLED and bool(cfg.TSE_API_KEY) and bool(cfg.TSE_BASE_URL)
+
         async with AtlasClient(cfg.ATLAS_BASE_URL, cfg.ATLAS_API_KEY) as atlas, \
                    NERClient(cfg.NER_BASE_URL, cfg.NER_API_KEY) as ner:
 
-            om = OrderManager(ner, self.state, self.risk, cfg)
-            await self.startup(atlas, ner)
+            if tse_enabled:
+                tse_ctx = TSEClient(cfg.TSE_BASE_URL, cfg.TSE_API_KEY)
+                await tse_ctx.__aenter__()
+                logger.info(f"TSE client initialised → {cfg.TSE_BASE_URL}")
+            else:
+                tse_ctx = None
+                if cfg.TSE_QUOTING_ENABLED:
+                    logger.warning("TSE_QUOTING_ENABLED=true but TSE_API_KEY or TSE_BASE_URL missing — TSE disabled")
 
-            tasks = [
-                asyncio.create_task(self._polling_loop(atlas, ner, om), name="polling"),
-                asyncio.create_task(self._recalibration_loop(atlas), name="recalibration"),
-                asyncio.create_task(self._session_reset_loop(), name="session_reset"),
-                asyncio.create_task(self._start_webhook_server(ner), name="webhook"),
-            ]
-
-            def _shutdown(sig):
-                logger.info(f"Signal {sig.name} — shutting down...")
-                self._running = False
-                for t in tasks:
-                    t.cancel()
-
-            loop = asyncio.get_event_loop()
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, _shutdown, sig)
-
-            logger.info("All tasks running. Bot is live.")
             try:
-                await asyncio.gather(*tasks, return_exceptions=True)
+                om = OrderManager(ner, self.state, self.risk, cfg, tse_client=tse_ctx)
+                await self.startup(atlas, ner)
+
+                tasks = [
+                    asyncio.create_task(self._polling_loop(atlas, ner, om), name="polling"),
+                    asyncio.create_task(self._recalibration_loop(atlas), name="recalibration"),
+                    asyncio.create_task(self._session_reset_loop(), name="session_reset"),
+                    asyncio.create_task(self._start_webhook_server(ner), name="webhook"),
+                ]
+
+                def _shutdown(sig):
+                    logger.info(f"Signal {sig.name} — shutting down...")
+                    self._running = False
+                    for t in tasks:
+                        t.cancel()
+
+                loop = asyncio.get_event_loop()
+                for sig in (signal.SIGINT, signal.SIGTERM):
+                    loop.add_signal_handler(sig, _shutdown, sig)
+
+                logger.info("All tasks running. Bot is live.")
+                try:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                finally:
+                    logger.info("Bot shut down cleanly.")
+                    self.risk.log_risk_summary()
             finally:
-                logger.info("Bot shut down cleanly.")
-                self.risk.log_risk_summary()
+                if tse_ctx is not None:
+                    await tse_ctx.__aexit__(None, None, None)
 
 
 if __name__ == "__main__":
