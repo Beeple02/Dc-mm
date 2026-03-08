@@ -414,11 +414,22 @@ async def calibrate_all(atlas, cfg, excluded: set[str]) -> CalibrationResult:
         logger.error(f"Failed to fetch NER securities: {e}")
         return result
 
-    tickers = [
-        s["ticker"] for s in securities
-        if not s.get("frozen", False)
-        and s["ticker"] not in excluded
-    ]
+    # Atlas /securities/source/ner may return either:
+    #   - list of dicts: [{"ticker": "RTG", "frozen": false, ...}]
+    #   - list of strings: ["RTG", "BB", ...]
+    # Handle both defensively.
+    tickers = []
+    for s in securities:
+        if isinstance(s, str):
+            ticker = s
+            frozen = False
+        elif isinstance(s, dict):
+            ticker = s.get("ticker", "")
+            frozen = s.get("frozen", False)
+        else:
+            continue
+        if ticker and not frozen and ticker not in excluded:
+            tickers.append(ticker)
 
     logger.info(f"Calibrating {len(tickers)} NER tickers: {tickers}")
 
