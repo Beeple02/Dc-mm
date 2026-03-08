@@ -1,0 +1,5 @@
+[phases.build]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "PYTHONPATH=/app python /app/main.py"

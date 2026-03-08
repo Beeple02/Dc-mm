@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BPAM // MM MONITOR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&family=Bebas+Neue&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --fg: #e8e8e8;
+    --accent: #c8ff00;
+    --red: #ff3333;
+    --green: #00ff88;
+    --dim: #444;
+    --border: #222;
+    --warn: #ff9900;
+    --mono: 'IBM Plex Mono', monospace;
+    --display: 'Bebas Neue', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 12px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ── HEADER ── */
+  header {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    padding: 16px 24px;
+    border-bottom: 3px solid var(--accent);
+    background: #000;
+  }
+
+  .header-left { font-size: 11px; color: var(--dim); letter-spacing: 0.15em; }
+  
+  .header-title {
+    font-family: var(--display);
+    font-size: 28px;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    text-align: center;
+  }
+
+  .header-right {
+    text-align: right;
+    font-size: 11px;
+    color: var(--dim);
+    letter-spacing: 0.1em;
+  }
+
+  #clock { color: var(--fg); font-weight: 700; }
+  #conn-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+    margin-right: 6px;
+    vertical-align: middle;
+    transition: background 0.3s;
+  }
+  #conn-dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  #conn-dot.dead { background: var(--red); box-shadow: 0 0 6px var(--red); }
+
+  /* ── PORTFOLIO BAR ── */
+  #portfolio-bar {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    border-bottom: 1px solid var(--border);
+    background: #0d0d0d;
+  }
+
+  .pf-cell {
+    padding: 12px 20px;
+    border-right: 1px solid var(--border);
+  }
+  .pf-cell:last-child { border-right: none; }
+  .pf-label { font-size: 9px; letter-spacing: 0.2em; color: var(--dim); text-transform: uppercase; margin-bottom: 4px; }
+  .pf-value { font-size: 18px; font-weight: 700; letter-spacing: 0.02em; }
+  .pf-value.pos { color: var(--green); }
+  .pf-value.neg { color: var(--red); }
+  .pf-value.warn { color: var(--warn); }
+  .pf-value.neutral { color: var(--fg); }
+
+  /* ── STOP BANNER ── */
+  #stop-banner {
+    display: none;
+    padding: 10px 24px;
+    background: var(--red);
+    color: #000;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    text-align: center;
+    animation: blink 0.8s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.4; } }
+
+  /* ── MAIN GRID ── */
+  main {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    min-height: calc(100vh - 140px);
+  }
+
+  /* ── TICKERS PANEL ── */
+  #tickers-panel {
+    border-right: 1px solid var(--border);
+    padding: 0;
+  }
+
+  .panel-header {
+    padding: 10px 20px;
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    color: var(--dim);
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    background: #0d0d0d;
+  }
+
+  /* Ticker table */
+  .ticker-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .ticker-table th {
+    padding: 8px 14px;
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: var(--dim);
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    text-align: right;
+    font-weight: 400;
+    background: #0a0a0a;
+  }
+  .ticker-table th:first-child { text-align: left; }
+
+  .ticker-row {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+  .ticker-row:hover { background: #111; }
+  .ticker-row.selected { border-left: 3px solid var(--accent); }
+  .ticker-row.stopped { border-left: 3px solid var(--red); background: rgba(255,51,51,0.04); }
+  .ticker-row.unwinding { border-left: 3px solid var(--warn); background: rgba(255,153,0,0.04); }
+  .ticker-row.inactive { opacity: 0.35; }
+
+  .ticker-table td {
+    padding: 10px 14px;
+    text-align: right;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  .ticker-table td:first-child { text-align: left; }
+
+  .ticker-name {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  .ticker-status {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    color: var(--dim);
+    margin-top: 2px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 1px 6px;
+    font-size: 8px;
+    letter-spacing: 0.15em;
+    font-weight: 700;
+    border: 1px solid;
+  }
+  .badge.active { border-color: var(--accent); color: var(--accent); }
+  .badge.stop   { border-color: var(--red); color: var(--red); }
+  .badge.unwind { border-color: var(--warn); color: var(--warn); }
+  .badge.idle   { border-color: var(--dim); color: var(--dim); }
+
+  .quote-pair {
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .q-bid { color: var(--green); }
+  .q-ask { color: var(--red); }
+  .q-none { color: var(--dim); }
+
+  .inv-bar-wrap {
+    width: 60px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 0;
+    margin: 0 auto;
+    position: relative;
+  }
+  .inv-bar {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s;
+    min-width: 1px;
+  }
+  .inv-bar.danger { background: var(--red); }
+  .inv-bar.warn { background: var(--warn); }
+
+  .pnl { font-weight: 700; font-size: 12px; }
+  .pnl.pos { color: var(--green); }
+  .pnl.neg { color: var(--red); }
+  .pnl.zero { color: var(--dim); }
+
+  .score-bar-wrap {
+    width: 50px;
+    height: 3px;
+    background: var(--border);
+    margin: 0 auto;
+    margin-top: 3px;
+  }
+  .score-bar { height: 100%; background: var(--accent); }
+
+  /* ── RIGHT PANEL ── */
+  #right-panel { display: flex; flex-direction: column; }
+
+  /* Risk gauge */
+  #risk-panel {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .risk-title {
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  .gauge-wrap {
+    margin-bottom: 16px;
+  }
+  .gauge-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--dim);
+    margin-bottom: 4px;
+  }
+  .gauge-track {
+    height: 6px;
+    background: var(--border);
+    position: relative;
+  }
+  .gauge-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.5s, background 0.3s;
+    max-width: 100%;
+  }
+  .gauge-fill.warn { background: var(--warn); }
+  .gauge-fill.danger { background: var(--red); }
+
+  /* Bot params */
+  #params-panel {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    flex: 1;
+  }
+
+  .kv-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+  }
+  .kv-row:last-child { border-bottom: none; }
+  .kv-key { color: var(--dim); letter-spacing: 0.08em; }
+  .kv-val { font-weight: 700; }
+  .kv-val.accent { color: var(--accent); }
+  .kv-val.green { color: var(--green); }
+  .kv-val.red { color: var(--red); }
+
+  /* Log tail */
+  #log-panel {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+  }
+  .log-title {
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  #log-lines {
+    font-size: 10px;
+    line-height: 1.7;
+    color: #666;
+    height: 120px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column-reverse;
+  }
+  .log-line { animation: fadein 0.3s ease; }
+  .log-line.info { color: #888; }
+  .log-line.warn { color: var(--warn); }
+  .log-line.good { color: var(--green); }
+  .log-line.bad  { color: var(--red); }
+  @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+
+  /* Footer */
+  footer {
+    padding: 8px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: var(--dim);
+    letter-spacing: 0.15em;
+    background: #000;
+  }
+
+  /* Error state */
+  #error-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--red);
+    letter-spacing: 0.2em;
+    text-align: center;
+  }
+  #error-overlay.show { display: flex; }
+</style>
+</head>
+<body>
+
+<div id="error-overlay">
+  ⚠ CANNOT REACH BOT<br>
+  <span style="font-size:10px;color:#555;margin-top:8px;display:block">CHECK BOT_URL IN DASHBOARD CONFIG</span>
+</div>
+
+<div id="stop-banner">⚠ PORTFOLIO STOP TRIGGERED — ALL QUOTING HALTED ⚠</div>
+
+<header>
+  <div class="header-left">
+    <span id="conn-dot"></span>
+    <span id="conn-label">CONNECTING</span>
+  </div>
+  <div class="header-title">BPAM // MM MONITOR</div>
+  <div class="header-right">
+    <span id="clock">--:--:--</span><br>
+    <span id="uptime">UP 0.0h</span>
+  </div>
+</header>
+
+<div id="portfolio-bar">
+  <div class="pf-cell">
+    <div class="pf-label">Cash Available</div>
+    <div class="pf-value neutral" id="pf-cash">—</div>
+  </div>
+  <div class="pf-cell">
+    <div class="pf-label">Total Equity</div>
+    <div class="pf-value neutral" id="pf-equity">—</div>
+  </div>
+  <div class="pf-cell">
+    <div class="pf-label">Unrealized P&L</div>
+    <div class="pf-value neutral" id="pf-upnl">—</div>
+  </div>
+  <div class="pf-cell">
+    <div class="pf-label">Realized P&L</div>
+    <div class="pf-value neutral" id="pf-rpnl">—</div>
+  </div>
+  <div class="pf-cell">
+    <div class="pf-label">Quoting</div>
+    <div class="pf-value neutral" id="pf-selected">—</div>
+  </div>
+  <div class="pf-cell">
+    <div class="pf-label">τ Remaining</div>
+    <div class="pf-value neutral" id="pf-tau">—</div>
+  </div>
+</div>
+
+<main>
+  <div id="tickers-panel">
+    <div class="panel-header">ALL NER TICKERS</div>
+    <table class="ticker-table">
+      <thead>
+        <tr>
+          <th>TICKER</th>
+          <th>MID</th>
+          <th>BID ORDER</th>
+          <th>ASK ORDER</th>
+          <th>INV</th>
+          <th>P&L</th>
+          <th>σ</th>
+          <th>DRIFT</th>
+          <th>SCORE</th>
+          <th>STATUS</th>
+        </tr>
+      </thead>
+      <tbody id="tickers-body">
+        <tr><td colspan="10" style="text-align:center;padding:40px;color:var(--dim);letter-spacing:0.2em">AWAITING DATA</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div id="right-panel">
+    <div id="risk-panel">
+      <div class="risk-title">RISK EXPOSURE</div>
+      <div class="gauge-wrap">
+        <div class="gauge-label">
+          <span>PORTFOLIO LOSS</span>
+          <span id="gauge-pf-val">$0</span>
+        </div>
+        <div class="gauge-track">
+          <div class="gauge-fill" id="gauge-pf"></div>
+        </div>
+      </div>
+      <div id="ticker-gauges"></div>
+    </div>
+
+    <div id="params-panel">
+      <div class="risk-title">BOT PARAMETERS</div>
+      <div class="kv-row"><span class="kv-key">CAPITAL</span><span class="kv-val accent" id="p-capital">—</span></div>
+      <div class="kv-row"><span class="kv-key">STOP / TICKER</span><span class="kv-val red" id="p-stop-t">—</span></div>
+      <div class="kv-row"><span class="kv-key">STOP / PORTFOLIO</span><span class="kv-val red" id="p-stop-p">—</span></div>
+      <div class="kv-row"><span class="kv-key">WEBHOOK</span><span class="kv-val" id="p-webhook">—</span></div>
+      <div class="kv-row"><span class="kv-key">MAX TICKERS</span><span class="kv-val accent" id="p-maxt">—</span></div>
+      <div class="kv-row"><span class="kv-key">LAST POLL</span><span class="kv-val" id="p-poll">—</span></div>
+    </div>
+
+    <div id="log-panel">
+      <div class="log-title">ACTIVITY LOG</div>
+      <div id="log-lines"></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span>BLOOMBERG PRIVATE ASSET MANAGEMENT</span>
+  <span id="last-update">NEVER UPDATED</span>
+  <span>NER MM v2</span>
+</footer>
+
+<script>
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+// When served from the bot itself (your Railway URL), BOT_URL = '' (same origin).
+// If you open dashboard.html as a local file, set this to your Railway URL:
+//   const BOT_URL = 'https://your-bot.railway.app';
+const BOT_URL = '';
+
+const POLL_MS = 5000;  // refresh every 5s
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let lastData = null;
+let logLines = [];
+let consecutiveErrors = 0;
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const fmt$ = v => v == null ? '—' : `$${v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+const fmtPct = v => v == null ? '—' : `${(v*100).toFixed(1)}%`;
+const fmtN = (v, dp=4) => v == null ? '—' : v.toFixed(dp);
+
+function pnlClass(v) {
+  if (v == null || v === 0) return 'zero';
+  return v > 0 ? 'pos' : 'neg';
+}
+
+function addLog(msg, type='info') {
+  const ts = new Date().toTimeString().slice(0,8);
+  logLines.unshift({ ts, msg, type });
+  if (logLines.length > 30) logLines.pop();
+  renderLog();
+}
+
+function renderLog() {
+  const el = $('log-lines');
+  el.innerHTML = logLines.slice(0,10).map(l =>
+    `<div class="log-line ${l.type}">${l.ts} ${l.msg}</div>`
+  ).join('');
+}
+
+function setConnected(ok) {
+  const dot = $('conn-dot');
+  const lbl = $('conn-label');
+  dot.className = ok ? 'live' : 'dead';
+  lbl.textContent = ok ? 'LIVE' : 'DISCONNECTED';
+  $('error-overlay').classList.toggle('show', !ok && consecutiveErrors > 3);
+}
+
+function clock() {
+  $('clock').textContent = new Date().toTimeString().slice(0,8);
+}
+
+// ── RENDER ────────────────────────────────────────────────────────────────────
+function render(d) {
+  // Portfolio bar
+  const upnl = d.total_unrealized_pnl;
+  const rpnl = d.total_realized_pnl;
+  $('pf-cash').textContent   = fmt$(d.cash_available);
+  $('pf-equity').textContent = fmt$(d.total_equity);
+  $('pf-upnl').textContent   = fmt$(upnl);
+  $('pf-upnl').className     = `pf-value ${pnlClass(upnl)}`;
+  $('pf-rpnl').textContent   = fmt$(rpnl);
+  $('pf-rpnl').className     = `pf-value ${pnlClass(rpnl)}`;
+  $('pf-selected').textContent = d.selected_tickers.join(', ') || '—';
+  $('pf-tau').textContent    = `${d.t_remaining_hours.toFixed(2)}h`;
+  $('uptime').textContent    = `UP ${d.uptime_hours.toFixed(1)}h`;
+
+  // Stop banner
+  $('stop-banner').style.display = d.portfolio_stopped ? 'block' : 'none';
+
+  // Params panel
+  $('p-capital').textContent = fmt$(d.total_capital);
+  $('p-stop-t').textContent  = fmt$(d.stop_loss_per_ticker);
+  $('p-stop-p').textContent  = fmt$(d.stop_loss_portfolio);
+  $('p-webhook').textContent = d.webhook_alive ? 'LIVE' : 'POLLING';
+  $('p-webhook').className   = `kv-val ${d.webhook_alive ? 'green' : 'warn'}`;
+  $('p-maxt').textContent    = d.selected_tickers.length + ' / 3';
+  $('p-poll').textContent    = new Date().toTimeString().slice(0,8);
+
+  // Risk gauges
+  const pfPct = Math.min(Math.abs(upnl) / d.stop_loss_portfolio, 1);
+  $('gauge-pf').style.width = `${pfPct * 100}%`;
+  $('gauge-pf').className   = `gauge-fill${pfPct > 0.7 ? ' danger' : pfPct > 0.4 ? ' warn' : ''}`;
+  $('gauge-pf-val').textContent = fmt$(upnl);
+
+  // Per-ticker gauges
+  const tgEl = $('ticker-gauges');
+  tgEl.innerHTML = d.tickers
+    .filter(t => t.selected || t.inventory !== 0)
+    .map(t => {
+      const loss = Math.min(Math.abs(Math.min(t.unrealized_pnl, 0)) / d.stop_loss_per_ticker, 1);
+      const cls = loss > 0.7 ? ' danger' : loss > 0.4 ? ' warn' : '';
+      return `
+        <div class="gauge-wrap">
+          <div class="gauge-label">
+            <span>${t.ticker} LOSS</span>
+            <span>${fmt$(t.unrealized_pnl)}</span>
+          </div>
+          <div class="gauge-track">
+            <div class="gauge-fill${cls}" style="width:${loss*100}%"></div>
+          </div>
+        </div>`;
+    }).join('');
+
+  // Ticker table
+  const tbody = $('tickers-body');
+  const rows = d.tickers
+    .sort((a, b) => {
+      // Selected first, then by score
+      if (a.selected && !b.selected) return -1;
+      if (!a.selected && b.selected) return 1;
+      return (b.score || 0) - (a.score || 0);
+    })
+    .map(t => {
+      const invPct = t.q_max > 0 ? Math.abs(t.inventory) / t.q_max : 0;
+      const invBarCls = invPct > 0.8 ? 'danger' : invPct > 0.5 ? 'warn' : '';
+      const rowCls = t.is_stopped ? 'stopped' : t.unwind_order ? 'unwinding' : t.selected ? 'selected' : !t.eligible ? 'inactive' : '';
+
+      const badge = t.is_stopped ? '<span class="badge stop">STOP</span>'
+        : t.unwind_order ? '<span class="badge unwind">UNWIND</span>'
+        : t.selected ? '<span class="badge active">QUOTING</span>'
+        : t.eligible ? '<span class="badge idle">ELIGIBLE</span>'
+        : '<span class="badge idle">INELIGIBLE</span>';
+
+      const bidCell = t.bid_order
+        ? `<span class="q-bid">${fmtN(t.bid_order.price,2)} ×${t.bid_order.qty}</span>`
+        : `<span class="q-none">—</span>`;
+
+      const askCell = t.ask_order
+        ? `<span class="q-ask">${fmtN(t.ask_order.price,2)} ×${t.ask_order.qty}</span>`
+        : `<span class="q-none">—</span>`;
+
+      const pnlVal = t.unrealized_pnl + t.realized_pnl;
+
+      return `<tr class="ticker-row ${rowCls}">
+        <td>
+          <div class="ticker-name">${t.ticker}</div>
+          <div class="ticker-status">${fmt$(t.mid)} MID</div>
+        </td>
+        <td>${fmtN(t.mid, 4)}</td>
+        <td class="quote-pair">${bidCell}</td>
+        <td class="quote-pair">${askCell}</td>
+        <td>
+          <div>${t.inventory}/${t.q_max}</div>
+          <div class="inv-bar-wrap"><div class="inv-bar ${invBarCls}" style="width:${Math.min(invPct,1)*100}%"></div></div>
+        </td>
+        <td><span class="pnl ${pnlClass(pnlVal)}">${fmt$(pnlVal)}</span></td>
+        <td>${t.sigma != null ? (t.sigma*100).toFixed(2)+'%' : '—'}</td>
+        <td>${t.drift_score != null ? fmtN(t.drift_score, 2) : '—'}</td>
+        <td>
+          ${t.score != null ? fmtN(t.score, 2) : '—'}
+          ${t.score != null ? `<div class="score-bar-wrap"><div class="score-bar" style="width:${Math.min(Math.max(t.score/5,0),1)*100}%"></div></div>` : ''}
+        </td>
+        <td>${badge}</td>
+      </tr>`;
+    }).join('');
+
+  tbody.innerHTML = rows || '<tr><td colspan="10" style="text-align:center;padding:40px;color:var(--dim)">NO TICKER DATA</td></tr>';
+
+  // Detect changes from last data for log
+  if (lastData) {
+    // Detect new fills (inventory changes)
+    d.tickers.forEach(t => {
+      const prev = lastData.tickers.find(p => p.ticker === t.ticker);
+      if (prev && prev.inventory !== t.inventory) {
+        const delta = t.inventory - prev.inventory;
+        const side = delta > 0 ? 'BUY' : 'SELL';
+        addLog(`FILL ${t.ticker} ${side} ${Math.abs(delta)} @ ${fmtN(t.mid,2)}`, delta > 0 ? 'good' : 'warn');
+      }
+      if (prev && !prev.is_stopped && t.is_stopped) {
+        addLog(`STOP TRIGGERED: ${t.ticker} pnl=${fmt$(t.unrealized_pnl)}`, 'bad');
+      }
+      if (prev && !prev.unwind_order && t.unwind_order) {
+        addLog(`UNWIND: ${t.ticker} ${t.unwind_order.side} ${t.unwind_order.qty} @ ${fmtN(t.unwind_order.price,2)}`, 'warn');
+      }
+    });
+    // Detect selection changes
+    const prevSel = lastData.selected_tickers.sort().join(',');
+    const currSel = d.selected_tickers.sort().join(',');
+    if (prevSel !== currSel) {
+      addLog(`SELECTION CHANGED → ${d.selected_tickers.join(', ')}`, 'info');
+    }
+  }
+
+  $('last-update').textContent = `UPDATED ${new Date().toTimeString().slice(0,8)}`;
+  lastData = d;
+}
+
+// ── FETCH LOOP ────────────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const url = BOT_URL ? `${BOT_URL}/status` : '/status';
+    const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    consecutiveErrors = 0;
+    setConnected(true);
+    render(data);
+  } catch (e) {
+    consecutiveErrors++;
+    setConnected(false);
+    if (consecutiveErrors === 1) addLog(`CONNECTION ERROR: ${e.message}`, 'bad');
+  }
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+setInterval(clock, 1000);
+clock();
+addLog('Dashboard started', 'info');
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

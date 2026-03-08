@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "PYTHONPATH=/app python /app/main.py"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
